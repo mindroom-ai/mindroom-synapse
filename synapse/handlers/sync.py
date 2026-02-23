@@ -37,11 +37,12 @@ from synapse.api.constants import (
     EventContentFields,
     EventTypes,
     Membership,
+    RelationTypes,
 )
 from synapse.api.filtering import FilterCollection
 from synapse.api.presence import UserPresenceState
 from synapse.api.room_versions import KNOWN_ROOM_VERSIONS
-from synapse.events import EventBase
+from synapse.events import EventBase, relation_from_event
 from synapse.handlers.relations import BundledAggregations
 from synapse.logging import issue9533_logger
 from synapse.logging.context import current_context
@@ -116,6 +117,7 @@ class SyncConfig:
     is_guest: bool
     device_id: str | None
     use_state_after: bool
+    compact_edits: bool = False
 
 
 @attr.s(slots=True, frozen=True, auto_attribs=True)
@@ -685,6 +687,8 @@ class SyncHandler:
                     recents,
                     always_include_ids=current_state_ids,
                 )
+                if sync_config.compact_edits:
+                    recents = self._compact_replace_edits(recents)
                 log_kv({"recents_after_visibility_filtering": len(recents)})
             else:
                 recents = []
@@ -795,10 +799,14 @@ class SyncHandler:
                     loaded_recents,
                     always_include_ids=current_state_ids,
                 )
+                if sync_config.compact_edits:
+                    loaded_recents = self._compact_replace_edits(loaded_recents)
 
                 log_kv({"loaded_recents_after_client_filtering": len(loaded_recents)})
 
                 loaded_recents.extend(recents)
+                if sync_config.compact_edits:
+                    loaded_recents = self._compact_replace_edits(loaded_recents)
                 recents = loaded_recents
 
                 max_repeat -= 1
@@ -831,6 +839,35 @@ class SyncHandler:
             limited=limited or newly_joined_room or gap_token is not None,
             bundled_aggregations=bundled_aggregations,
         )
+
+    def _compact_replace_edits(self, events: Sequence[EventBase]) -> list[EventBase]:
+        """Drop intermediate `m.replace` events and keep only the latest edit per target.
+
+        This compacts timeline payload size for clients while preserving canonical
+        event storage and federation behaviour.
+        """
+        latest_replace_idx_by_parent: dict[str, int] = {}
+        relations: list[str | None] = []
+
+        for idx, event in enumerate(events):
+            relation = relation_from_event(event)
+            if relation is not None and relation.rel_type == RelationTypes.REPLACE:
+                latest_replace_idx_by_parent[relation.parent_id] = idx
+                relations.append(relation.parent_id)
+            else:
+                relations.append(None)
+
+        if not latest_replace_idx_by_parent:
+            return list(events)
+
+        compacted_events: list[EventBase] = []
+        for idx, event in enumerate(events):
+            parent_id = relations[idx]
+            if parent_id is not None and latest_replace_idx_by_parent[parent_id] != idx:
+                continue
+            compacted_events.append(event)
+
+        return compacted_events
 
     async def compute_summary(
         self,

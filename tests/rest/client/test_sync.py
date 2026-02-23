@@ -195,6 +195,65 @@ class SyncFilterTestCase(unittest.HomeserverTestCase):
         return channel.json_body["rooms"]["join"][room_id]["timeline"]["events"]
 
 
+class SyncCompactEditsTestCase(unittest.HomeserverTestCase):
+    servlets = [
+        synapse.rest.admin.register_servlets_for_client_rest_resource,
+        room.register_servlets,
+        login.register_servlets,
+        sync.register_servlets,
+    ]
+
+    def default_config(self) -> JsonDict:
+        config = super().default_config()
+        config.setdefault("experimental_features", {})
+        config["experimental_features"]["mindroom_compact_edits_enabled"] = True
+        return config
+
+    def test_sync_compacts_intermediate_edit_events(self) -> None:
+        user_id = self.register_user("compact", "test")
+        tok = self.login("compact", "test")
+        room_id = self.helper.create_room_as(user_id, tok=tok)
+
+        channel = self.make_request("GET", "/sync", access_token=tok)
+        self.assertEqual(channel.code, 200, channel.json_body)
+        since_token = channel.json_body["next_batch"]
+
+        # Create one message and multiple edits to simulate streaming updates.
+        original = self.helper.send(room_id, "v1", tok=tok)
+        parent_event_id = original["event_id"]
+
+        edit_event_ids = []
+        for body in ("v2", "v3", "v4"):
+            edit = self.helper.send_event(
+                room_id=room_id,
+                type=EventTypes.Message,
+                content={
+                    "msgtype": "m.text",
+                    "body": body,
+                    "m.new_content": {"msgtype": "m.text", "body": body},
+                    "m.relates_to": {
+                        "rel_type": RelationTypes.REPLACE,
+                        "event_id": parent_event_id,
+                    },
+                },
+                tok=tok,
+            )
+            edit_event_ids.append(edit["event_id"])
+
+        channel = self.make_request(
+            "GET", f"/sync?since={since_token}", access_token=tok
+        )
+        self.assertEqual(channel.code, 200, channel.json_body)
+
+        timeline_events = channel.json_body["rooms"]["join"][room_id]["timeline"][
+            "events"
+        ]
+        self.assertEqual(
+            [event["event_id"] for event in timeline_events],
+            [parent_event_id, edit_event_ids[-1]],
+        )
+
+
 class SyncTypingTests(unittest.HomeserverTestCase):
     servlets = [
         synapse.rest.admin.register_servlets_for_client_rest_resource,

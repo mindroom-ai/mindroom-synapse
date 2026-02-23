@@ -123,6 +123,9 @@ class SyncRestServlet(RestServlet):
         self._event_serializer = hs.get_event_client_serializer()
         self._msc2654_enabled = hs.config.experimental.msc2654_enabled
         self._msc3773_enabled = hs.config.experimental.msc3773_enabled
+        self._mindroom_compact_edits_enabled = (
+            hs.config.experimental.mindroom_compact_edits_enabled
+        )
 
         self._json_filter_cache: LruCache[str, bool] = LruCache(
             max_size=1000,
@@ -171,16 +174,18 @@ class SyncRestServlet(RestServlet):
             use_state_after = parse_boolean(
                 request, "org.matrix.msc4222.use_state_after", default=False
             )
+        compact_edits = self._mindroom_compact_edits_enabled
 
         logger.debug(
             "/sync: user=%r, timeout=%r, since=%r, "
-            "set_presence=%r, filter_id=%r, device_id=%r",
+            "set_presence=%r, filter_id=%r, device_id=%r, compact_edits=%r",
             user,
             timeout,
             since,
             set_presence,
             filter_id,
             device_id,
+            compact_edits,
         )
 
         # Stream position of the last ignored users account data event for this user,
@@ -205,6 +210,7 @@ class SyncRestServlet(RestServlet):
             device_id,
             last_ignore_accdata_streampos,
             use_state_after,
+            compact_edits,
         )
 
         if filter_id is None:
@@ -242,6 +248,7 @@ class SyncRestServlet(RestServlet):
             is_guest=requester.is_guest,
             device_id=device_id,
             use_state_after=use_state_after,
+            compact_edits=compact_edits,
         )
 
         since_token = None
