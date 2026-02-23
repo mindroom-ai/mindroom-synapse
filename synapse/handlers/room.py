@@ -1876,6 +1876,9 @@ class RoomContextHandler:
         self._storage_controllers = hs.get_storage_controllers()
         self._state_storage_controller = self._storage_controllers.state
         self._relations_handler = hs.get_relations_handler()
+        self._compact_edits_enabled = (
+            hs.config.experimental.mindroom_compact_edits_enabled
+        )
 
     async def get_event_context(
         self,
@@ -1948,6 +1951,19 @@ class RoomContextHandler:
 
         events_before = await filter_evts(events_before)
         events_after = await filter_evts(events_after)
+
+        if self._compact_edits_enabled:
+            events_before = (
+                await self._relations_handler.collapse_superseded_replace_events(
+                    events_before
+                )
+            )
+            events_after = (
+                await self._relations_handler.collapse_superseded_replace_events(
+                    events_after
+                )
+            )
+
         # filter_evts can return a pruned event in case the user is allowed to see that
         # there's something there but not see the content, so use the event that's in
         # `filtered` rather than the event we retrieved from the datastore.

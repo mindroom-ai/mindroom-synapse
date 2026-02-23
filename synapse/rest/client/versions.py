@@ -186,6 +186,10 @@ class VersionsRestServlet(RestServlet):
                     "org.matrix.msc4354": self.config.experimental.msc4354_enabled,
                     # MSC4380: Invite blocking
                     "org.matrix.msc4380": self.config.experimental.msc4380_enabled,
+                    # MindRoom: compact edit streaming in timeline responses.
+                    "org.mindroom.compact_edits": (
+                        self.config.experimental.mindroom_compact_edits_enabled
+                    ),
                 },
             },
         )

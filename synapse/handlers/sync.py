@@ -297,6 +297,9 @@ class SyncHandler:
         self._task_scheduler = hs.get_task_scheduler()
 
         self.should_calculate_push_rules = hs.config.push.enable_push
+        self._compact_edits_enabled = (
+            hs.config.experimental.mindroom_compact_edits_enabled
+        )
 
         # TODO: flush cache entries on subsequent sync request.
         #    Once we get the next /sync request (ie, one with the same access token
@@ -689,6 +692,13 @@ class SyncHandler:
             else:
                 recents = []
 
+            if self._compact_edits_enabled and recents:
+                recents = (
+                    await self._relations_handler.collapse_superseded_replace_events(
+                        recents
+                    )
+                )
+
             if not limited or block_all_timeline:
                 prev_batch_token = upto_token
                 if recents:
@@ -802,6 +812,13 @@ class SyncHandler:
                 recents = loaded_recents
 
                 max_repeat -= 1
+
+            if self._compact_edits_enabled and recents:
+                recents = (
+                    await self._relations_handler.collapse_superseded_replace_events(
+                        recents
+                    )
+                )
 
             if len(recents) > timeline_limit:
                 limited = True

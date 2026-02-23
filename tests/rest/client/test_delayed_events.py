@@ -39,6 +39,23 @@ _EVENT_TYPE = "com.example.test"
 class DelayedEventsUnstableSupportTestCase(HomeserverTestCase):
     servlets = [versions.register_servlets]
 
+    def test_mindroom_compact_edits_false_by_default(self) -> None:
+        channel = self.make_request("GET", "/_matrix/client/versions")
+        self.assertEqual(channel.code, 200, channel.result)
+        self.assertFalse(
+            channel.json_body["unstable_features"]["org.mindroom.compact_edits"]
+        )
+
+    @unittest.override_config(
+        {"experimental_features": {"mindroom_compact_edits_enabled": True}}
+    )
+    def test_mindroom_compact_edits_true_if_enabled(self) -> None:
+        channel = self.make_request("GET", "/_matrix/client/versions")
+        self.assertEqual(channel.code, 200, channel.result)
+        self.assertTrue(
+            channel.json_body["unstable_features"]["org.mindroom.compact_edits"]
+        )
+
     def test_false_by_default(self) -> None:
         channel = self.make_request("GET", "/_matrix/client/versions")
         self.assertEqual(channel.code, 200, channel.result)

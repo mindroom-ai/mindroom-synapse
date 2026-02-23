@@ -49,6 +49,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _replace_event_sort_key(event: EventBase) -> tuple[int, str]:
+    """Sort key for replacement events from oldest to newest."""
+    return event.origin_server_ts, event.event_id
+
+
 class ThreadsListInclude(str, enum.Enum):
     """Valid values for the 'include' flag of /threads."""
 
@@ -91,6 +96,59 @@ class RelationsHandler:
         self._event_handler = hs.get_event_handler()
         self._event_serializer = hs.get_event_client_serializer()
         self._event_creation_handler = hs.get_event_creation_handler()
+
+    async def collapse_superseded_replace_events(
+        self, events: Sequence[EventBase]
+    ) -> list[EventBase]:
+        """Collapse multiple replacement events per target into a single event.
+
+        For each target event in the input sequence, keep at most one `m.replace`
+        relation event:
+
+        - Prefer the latest applicable edit according to Synapse's sender/type
+          rules if that edit is present in this sequence.
+        - Otherwise keep the newest replacement event in this sequence.
+        """
+
+        replace_events_by_target: dict[str, list[EventBase]] = {}
+        for event in events:
+            relation = relation_from_event(event)
+            if relation is None or relation.rel_type != RelationTypes.REPLACE:
+                continue
+
+            replace_events_by_target.setdefault(relation.parent_id, []).append(event)
+
+        if not replace_events_by_target:
+            return list(events)
+
+        latest_applicable_edits = await self._main_store.get_applicable_edits(
+            replace_events_by_target.keys()
+        )
+
+        keep_replace_event_ids: set[str] = set()
+        for target_event_id, replace_events in replace_events_by_target.items():
+            latest_applicable = latest_applicable_edits.get(target_event_id)
+            if latest_applicable is not None and any(
+                e.event_id == latest_applicable.event_id for e in replace_events
+            ):
+                keep_replace_event_ids.add(latest_applicable.event_id)
+                continue
+
+            keep_replace_event_ids.add(
+                max(replace_events, key=_replace_event_sort_key).event_id
+            )
+
+        compacted_events: list[EventBase] = []
+        for event in events:
+            relation = relation_from_event(event)
+            if relation is not None and relation.rel_type == RelationTypes.REPLACE:
+                if event.event_id in keep_replace_event_ids:
+                    compacted_events.append(event)
+                continue
+
+            compacted_events.append(event)
+
+        return compacted_events
 
     async def get_relations(
         self,

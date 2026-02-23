@@ -144,6 +144,9 @@ class PaginationHandler:
         self._relations_handler = hs.get_relations_handler()
         self._worker_locks = hs.get_worker_locks_handler()
         self._task_scheduler = hs.get_task_scheduler()
+        self._compact_edits_enabled = (
+            hs.config.experimental.mindroom_compact_edits_enabled
+        )
 
         self.pagination_lock = ReadWriteLock()
         # IDs of rooms in which there currently an active purge *or delete* operation.
@@ -689,6 +692,11 @@ class PaginationHandler:
                 user_id,
                 events,
                 is_peeking=(member_event_id is None),
+            )
+
+        if self._compact_edits_enabled and events:
+            events = await self._relations_handler.collapse_superseded_replace_events(
+                events
             )
 
         # if after the filter applied there are no more events
