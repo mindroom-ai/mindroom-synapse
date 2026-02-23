@@ -457,6 +457,12 @@ class ExperimentalConfig(Config):
         # MSC3874: Filtering /messages with rel_types / not_rel_types.
         self.msc3874_enabled: bool = experimental.get("msc3874_enabled", False)
 
+        # MindRoom compact edits: collapse superseded m.replace events in timeline
+        # responses to reduce streaming edit noise for clients.
+        self.mindroom_compact_edits_enabled: bool = experimental.get(
+            "mindroom_compact_edits_enabled", False
+        )
+
         # MSC3890: Remotely silence local notifications
         # Note: This option requires "experimental_features.msc3391_enabled" to be
         # set to "true", in order to communicate account data deletions to clients.

@@ -160,6 +160,112 @@ class BaseRelationsTestCase(unittest.HomeserverTestCase):
         raise AssertionError(f"Event {self.parent_id} not found in chunk")
 
 
+class CompactEditTimelineTestCase(BaseRelationsTestCase):
+    @staticmethod
+    def _replace_event_ids_for_target(events: list[JsonDict], target_event_id: str) -> list[str]:
+        replace_event_ids = []
+        for event in events:
+            relation = event.get("content", {}).get("m.relates_to", {})
+            if (
+                relation.get("rel_type") == RelationTypes.REPLACE
+                and relation.get("event_id") == target_event_id
+            ):
+                replace_event_ids.append(event["event_id"])
+
+        return replace_event_ids
+
+    @unittest.override_config(
+        {"experimental_features": {"mindroom_compact_edits_enabled": True}}
+    )
+    def test_sync_keeps_only_latest_applicable_edit(self) -> None:
+        sync_channel = self.make_request(
+            "GET",
+            "/sync",
+            access_token=self.user_token,
+        )
+        self.assertEqual(200, sync_channel.code, sync_channel.json_body)
+        next_batch = sync_channel.json_body["next_batch"]
+
+        valid_edit_content = {
+            "msgtype": "m.text",
+            "body": "* valid edit",
+            "m.new_content": {"msgtype": "m.text", "body": "valid edit"},
+        }
+        valid_edit_event_id = self._send_relation(
+            RelationTypes.REPLACE,
+            EventTypes.Message,
+            content=valid_edit_content,
+        ).json_body["event_id"]
+
+        invalid_edit_content = {
+            "msgtype": "m.text",
+            "body": "* invalid edit",
+            "m.new_content": {"msgtype": "m.text", "body": "invalid edit"},
+        }
+        self._send_relation(
+            RelationTypes.REPLACE,
+            EventTypes.Message,
+            content=invalid_edit_content,
+            access_token=self.user2_token,
+        )
+
+        incremental_sync_channel = self.make_request(
+            "GET",
+            f"/sync?since={urllib.parse.quote(next_batch)}",
+            access_token=self.user_token,
+        )
+        self.assertEqual(
+            200, incremental_sync_channel.code, incremental_sync_channel.json_body
+        )
+
+        timeline_events = incremental_sync_channel.json_body["rooms"]["join"][self.room][
+            "timeline"
+        ]["events"]
+        replace_event_ids = self._replace_event_ids_for_target(
+            timeline_events, self.parent_id
+        )
+
+        self.assertEqual(replace_event_ids, [valid_edit_event_id])
+
+    @unittest.override_config(
+        {"experimental_features": {"mindroom_compact_edits_enabled": True}}
+    )
+    def test_messages_compacts_superseded_edits(self) -> None:
+        first_edit_event_id = self._send_relation(
+            RelationTypes.REPLACE,
+            EventTypes.Message,
+            content={
+                "msgtype": "m.text",
+                "body": "* first edit",
+                "m.new_content": {"msgtype": "m.text", "body": "first edit"},
+            },
+        ).json_body["event_id"]
+        second_edit_event_id = self._send_relation(
+            RelationTypes.REPLACE,
+            EventTypes.Message,
+            content={
+                "msgtype": "m.text",
+                "body": "* second edit",
+                "m.new_content": {"msgtype": "m.text", "body": "second edit"},
+            },
+        ).json_body["event_id"]
+
+        channel = self.make_request(
+            "GET",
+            f"/rooms/{self.room}/messages?dir=b&limit=50",
+            access_token=self.user_token,
+        )
+        self.assertEqual(200, channel.code, channel.json_body)
+
+        replace_event_ids = self._replace_event_ids_for_target(
+            channel.json_body["chunk"], self.parent_id
+        )
+
+        self.assertIn(second_edit_event_id, replace_event_ids)
+        self.assertNotIn(first_edit_event_id, replace_event_ids)
+        self.assertEqual(len(replace_event_ids), 1)
+
+
 class RelationsTestCase(BaseRelationsTestCase):
     def test_send_relation(self) -> None:
         """Tests that sending a relation works."""

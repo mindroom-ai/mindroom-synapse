@@ -105,6 +105,7 @@ class SlidingSyncHandler:
         self.notifier = hs.get_notifier()
         self.event_sources = hs.get_event_sources()
         self.relations_handler = hs.get_relations_handler()
+        self._compact_edits_enabled = hs.config.experimental.mindroom_compact_edits_enabled
         self.rooms_to_exclude_globally = hs.config.server.rooms_to_exclude_from_sync
         self.is_mine_id = hs.is_mine_id
 
@@ -763,6 +764,13 @@ class SlidingSyncHandler:
                 != Membership.JOIN,
                 filter_send_to_client=True,
             )
+
+            if self._compact_edits_enabled and timeline_events:
+                timeline_events = (
+                    await self.relations_handler.collapse_superseded_replace_events(
+                        timeline_events
+                    )
+                )
 
             # TODO: Handle timeline gaps (`get_timeline_gaps()`)
 
