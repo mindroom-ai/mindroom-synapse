@@ -110,6 +110,7 @@ from synapse.handlers.push_rules import PushRulesHandler
 from synapse.handlers.read_marker import ReadMarkerHandler
 from synapse.handlers.receipts import ReceiptsHandler
 from synapse.handlers.register import RegistrationHandler
+from synapse.handlers.purge_edits import PurgeEditsHandler
 from synapse.handlers.relations import RelationsHandler
 from synapse.handlers.reports import ReportsHandler
 from synapse.handlers.room import (
@@ -306,6 +307,7 @@ class HomeServer(metaclass=abc.ABCMeta):
         "e2e_keys",  # for the `delete_old_otks` scheduled-task handler
         "message",
         "pagination",
+        "purge_edits",
         "profile",
         "room_forgetter",
         "stats",
@@ -1070,6 +1072,10 @@ class HomeServer(metaclass=abc.ABCMeta):
     @cache_in_self
     def get_relations_handler(self) -> RelationsHandler:
         return RelationsHandler(self)
+
+    @cache_in_self
+    def get_purge_edits_handler(self) -> PurgeEditsHandler:
+        return PurgeEditsHandler(self)
 
     @cache_in_self
     def get_room_context_handler(self) -> RoomContextHandler:

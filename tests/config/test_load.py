@@ -165,6 +165,64 @@ class ConfigLoadingFileTestCase(ConfigFileTestCase):
     @parameterized.expand(
         [
             (
+                "non_mapping",
+                "experimental_features:\n"
+                "  mindroom_compact_edits_enabled: true\n"
+                "  mindroom_edit_purge: 1",
+            ),
+            (
+                "enabled_not_bool",
+                "experimental_features:\n"
+                "  mindroom_compact_edits_enabled: true\n"
+                "  mindroom_edit_purge:\n"
+                "    enabled: \"true\"",
+            ),
+            (
+                "min_age_negative",
+                "experimental_features:\n"
+                "  mindroom_compact_edits_enabled: true\n"
+                "  mindroom_edit_purge:\n"
+                "    enabled: true\n"
+                "    min_age_seconds: -1",
+            ),
+            (
+                "interval_not_positive",
+                "experimental_features:\n"
+                "  mindroom_compact_edits_enabled: true\n"
+                "  mindroom_edit_purge:\n"
+                "    enabled: true\n"
+                "    interval_seconds: 0",
+            ),
+            (
+                "batch_size_bool",
+                "experimental_features:\n"
+                "  mindroom_compact_edits_enabled: true\n"
+                "  mindroom_edit_purge:\n"
+                "    enabled: true\n"
+                "    batch_size: true",
+            ),
+            (
+                "dry_run_not_bool",
+                "experimental_features:\n"
+                "  mindroom_compact_edits_enabled: true\n"
+                "  mindroom_edit_purge:\n"
+                "    enabled: true\n"
+                "    dry_run: 1",
+            ),
+        ]
+    )
+    def test_invalid_mindroom_edit_purge_config(
+        self, _: str, config_str: str
+    ) -> None:
+        self.generate_config()
+        self.add_lines_to_config(["", config_str])
+
+        with self.assertRaises(ConfigError):
+            HomeServerConfig.load_config("", ["-c", self.config_file])
+
+    @parameterized.expand(
+        [
+            (
                 "turn_shared_secret_path: {}",
                 lambda c: c.voip.turn_shared_secret.encode("utf-8"),
             ),

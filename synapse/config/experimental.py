@@ -463,6 +463,74 @@ class ExperimentalConfig(Config):
             "mindroom_compact_edits_enabled", False
         )
 
+        # MindRoom edit purge: permanently delete superseded m.replace events
+        # from storage after a configurable age threshold.  Requires
+        # mindroom_compact_edits_enabled to be true.
+        edit_purge_cfg = experimental.get("mindroom_edit_purge", {})
+        if not isinstance(edit_purge_cfg, dict):
+            raise ConfigError(
+                "mindroom_edit_purge must be a mapping",
+                ("experimental_features", "mindroom_edit_purge"),
+            )
+
+        def _read_edit_purge_int(
+            key: str,
+            default: int,
+            min_value: int,
+            min_value_desc: str,
+        ) -> int:
+            value = edit_purge_cfg.get(key, default)
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ConfigError(
+                    f"mindroom_edit_purge.{key} must be an integer",
+                    ("experimental_features", "mindroom_edit_purge", key),
+                )
+            if value < min_value:
+                raise ConfigError(
+                    f"mindroom_edit_purge.{key} must be {min_value_desc}",
+                    ("experimental_features", "mindroom_edit_purge", key),
+                )
+            return value
+
+        self.mindroom_edit_purge_enabled = edit_purge_cfg.get("enabled", False)
+        if not isinstance(self.mindroom_edit_purge_enabled, bool):
+            raise ConfigError(
+                "mindroom_edit_purge.enabled must be a boolean",
+                ("experimental_features", "mindroom_edit_purge", "enabled"),
+            )
+
+        self.mindroom_edit_purge_min_age_seconds = _read_edit_purge_int(
+            "min_age_seconds",
+            86400,
+            0,
+            "a non-negative integer",
+        )
+        self.mindroom_edit_purge_interval_seconds = _read_edit_purge_int(
+            "interval_seconds",
+            3600,
+            1,
+            "a positive integer",
+        )
+        self.mindroom_edit_purge_batch_size = _read_edit_purge_int(
+            "batch_size",
+            1000,
+            1,
+            "a positive integer",
+        )
+
+        self.mindroom_edit_purge_dry_run = edit_purge_cfg.get("dry_run", False)
+        if not isinstance(self.mindroom_edit_purge_dry_run, bool):
+            raise ConfigError(
+                "mindroom_edit_purge.dry_run must be a boolean",
+                ("experimental_features", "mindroom_edit_purge", "dry_run"),
+            )
+
+        if self.mindroom_edit_purge_enabled and not self.mindroom_compact_edits_enabled:
+            raise ConfigError(
+                "mindroom_edit_purge requires mindroom_compact_edits_enabled to be true",
+                ("experimental_features", "mindroom_edit_purge", "enabled"),
+            )
+
         # MSC3890: Remotely silence local notifications
         # Note: This option requires "experimental_features.msc3391_enabled" to be
         # set to "true", in order to communicate account data deletions to clients.

@@ -5,6 +5,7 @@ This repository tracks upstream Synapse and carries a small set of fork-specific
 
 ## Fork-specific additions
 - Compact edit timeline mode to collapse superseded `m.replace` events in client-facing timelines.
+- Optional storage purge for superseded edits (`experimental_features.mindroom_edit_purge`), including a background job and admin trigger API (`POST /_synapse/admin/v1/purge_edits`).
 - `/versions` unstable feature advertisement for `org.mindroom.compact_edits`.
 - Fork CI and Docker publishing workflows for `ghcr.io/mindroom-ai/mindroom-synapse`.
 - Nix shell entrypoint (`shell.nix`) for local development on NixOS.

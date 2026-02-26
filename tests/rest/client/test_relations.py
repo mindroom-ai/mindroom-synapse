@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, patch
 
 from twisted.internet.testing import MemoryReactor
 
-from synapse.api.constants import AccountDataTypes, EventTypes, RelationTypes
+from synapse.api.constants import AccountDataTypes, EventTypes, ReceiptTypes, RelationTypes
 from synapse.rest import admin
 from synapse.rest.client import login, register, relations, room, sync
 from synapse.server import HomeServer
@@ -2060,3 +2060,491 @@ class ThreadsTestCase(BaseRelationsTestCase):
         self.assertEqual(200, channel.code, channel.json_body)
         thread_roots = [ev["event_id"] for ev in channel.json_body["chunk"]]
         self.assertEqual(thread_roots, [thread_1], channel.json_body)
+
+
+class PurgeEditsTestCase(BaseRelationsTestCase):
+    """Tests for the storage-level edit purge feature."""
+
+    servlets = [
+        relations.register_servlets,
+        room.register_servlets,
+        sync.register_servlets,
+        login.register_servlets,
+        register.register_servlets,
+        admin.register_servlets_for_client_rest_resource,
+        admin.register_servlets,
+    ]
+
+    def default_config(self) -> dict[str, Any]:
+        config = super().default_config()
+        experimental = config.setdefault("experimental_features", {})
+        experimental["mindroom_compact_edits_enabled"] = True
+        experimental["mindroom_edit_purge"] = {
+            "enabled": True,
+            "min_age_seconds": 3600,  # 1 hour
+            # Use a very long interval so the periodic task doesn't fire
+            # during reactor.advance() in tests — we call run_purge() manually.
+            "interval_seconds": 999999,
+            "batch_size": 1000,
+            "dry_run": False,
+        }
+        return config
+
+    def prepare(self, reactor: MemoryReactor, clock: Clock, hs: HomeServer) -> None:
+        super().prepare(reactor, clock, hs)
+        self.admin_user_id = self.register_user("admin", "adminpass", admin=True)
+        self.admin_token = self.login("admin", "adminpass")
+        self.purge_handler = hs.get_purge_edits_handler()
+
+    def _send_edit(self, body: str, parent_id: str | None = None) -> str:
+        """Send an m.replace edit and return the new event ID."""
+        content = {
+            "msgtype": "m.text",
+            "body": f"* {body}",
+            "m.new_content": {"msgtype": "m.text", "body": body},
+        }
+        channel = self._send_relation(
+            RelationTypes.REPLACE,
+            EventTypes.Message,
+            content=content,
+            parent_id=parent_id,
+        )
+        return channel.json_body["event_id"]
+
+    def test_purge_removes_superseded_edits(self) -> None:
+        """After purge, only the latest edit for a target survives."""
+        edit1_id = self._send_edit("edit 1")
+        edit2_id = self._send_edit("edit 2")
+        edit3_id = self._send_edit("edit 3")
+
+        # Verify all 3 edits exist in storage
+        self.assertIsNotNone(
+            self.get_success(self.store.get_event(edit1_id, allow_none=True))
+        )
+        self.assertIsNotNone(
+            self.get_success(self.store.get_event(edit2_id, allow_none=True))
+        )
+
+        # Advance time past the min_age threshold
+        self.reactor.advance(7200)  # 2 hours
+
+        # Run purge
+        purged = self.get_success(self.purge_handler.run_purge())
+        self.assertEqual(purged, 2)  # edit1 and edit2 should be purged
+
+        # edit3 (the latest) should still exist
+        self.assertIsNotNone(
+            self.get_success(self.store.get_event(edit3_id, allow_none=True))
+        )
+
+        # edit1 and edit2 should be gone
+        self.assertIsNone(
+            self.get_success(self.store.get_event(edit1_id, allow_none=True))
+        )
+        self.assertIsNone(
+            self.get_success(self.store.get_event(edit2_id, allow_none=True))
+        )
+
+    def test_purge_fk_references_to_deleted_events(self) -> None:
+        """Purge removes rows in FK tables which point at the deleted events."""
+        edit1_id = self._send_edit("edit 1")
+        self._send_edit("edit 2")
+
+        # Create FK references that would block event deletion if not cleaned up.
+        self.get_success(
+            self.store.db_pool.simple_upsert(
+                table="partial_state_rooms",
+                keyvalues={"room_id": self.room},
+                values={},
+                desc="test_purge_fk_references_to_deleted_events_partial_state_rooms",
+            )
+        )
+        self.get_success(
+            self.store.db_pool.simple_upsert(
+                table="partial_state_events",
+                keyvalues={"event_id": edit1_id},
+                values={},
+                insertion_values={"room_id": self.room},
+                desc="test_purge_fk_references_to_deleted_events_partial_state_events",
+            )
+        )
+        self.get_success(
+            self.store.db_pool.simple_upsert(
+                table="event_forward_extremities",
+                keyvalues={"event_id": edit1_id, "room_id": self.room},
+                values={},
+                desc=(
+                    "test_purge_fk_references_to_deleted_events_"
+                    "event_forward_extremities"
+                ),
+            )
+        )
+
+        self.reactor.advance(7200)
+
+        purged = self.get_success(self.purge_handler.run_purge())
+        self.assertEqual(purged, 1)
+
+        self.assertIsNone(
+            self.get_success(
+                self.store.db_pool.simple_select_one_onecol(
+                    table="partial_state_events",
+                    keyvalues={"event_id": edit1_id},
+                    retcol="event_id",
+                    allow_none=True,
+                    desc="test_purge_fk_references_to_deleted_events_partial_state_events",
+                )
+            )
+        )
+        self.assertIsNone(
+            self.get_success(
+                self.store.db_pool.simple_select_one_onecol(
+                    table="event_forward_extremities",
+                    keyvalues={"event_id": edit1_id, "room_id": self.room},
+                    retcol="event_id",
+                    allow_none=True,
+                    desc=(
+                        "test_purge_fk_references_to_deleted_events_"
+                        "event_forward_extremities"
+                    ),
+                )
+            )
+        )
+
+    def test_purge_respects_min_age(self) -> None:
+        """Edits younger than min_age_seconds are not purged."""
+        self._send_edit("edit 1")
+        edit2_id = self._send_edit("edit 2")
+
+        # Don't advance time — edits are too young
+        purged = self.get_success(self.purge_handler.run_purge())
+        self.assertEqual(purged, 0)
+
+        # Both should still exist
+        self.assertIsNotNone(
+            self.get_success(self.store.get_event(edit2_id, allow_none=True))
+        )
+
+    def test_purge_preserves_original_event(self) -> None:
+        """The original message event is never purged."""
+        self._send_edit("edit 1")
+        self._send_edit("edit 2")
+
+        self.reactor.advance(7200)
+
+        self.get_success(self.purge_handler.run_purge())
+
+        # The parent event should still exist
+        self.assertIsNotNone(
+            self.get_success(self.store.get_event(self.parent_id, allow_none=True))
+        )
+
+    def test_purge_dry_run(self) -> None:
+        """Dry run reports count but doesn't delete events."""
+        edit1_id = self._send_edit("edit 1")
+        self._send_edit("edit 2")
+
+        self.reactor.advance(7200)
+
+        purged = self.get_success(self.purge_handler.run_purge(dry_run=True))
+        self.assertEqual(purged, 1)
+
+        # edit1 should still exist
+        self.assertIsNotNone(
+            self.get_success(self.store.get_event(edit1_id, allow_none=True))
+        )
+
+    def test_purge_dry_run_does_not_affect_next_real_run(self) -> None:
+        """A dry run should not consume work from the next real purge."""
+        edit1_id = self._send_edit("edit 1")
+        self._send_edit("edit 2")
+
+        self.reactor.advance(7200)
+
+        self.assertEqual(self.get_success(self.purge_handler.run_purge(dry_run=True)), 1)
+        self.assertEqual(self.get_success(self.purge_handler.run_purge()), 1)
+
+        self.assertIsNone(
+            self.get_success(self.store.get_event(edit1_id, allow_none=True))
+        )
+
+    def test_purge_handles_no_edits(self) -> None:
+        """Purge does nothing when there are no edits."""
+        purged = self.get_success(self.purge_handler.run_purge())
+        self.assertEqual(purged, 0)
+
+    def test_purge_handles_single_edit(self) -> None:
+        """A single edit for a target is the latest — it should not be purged."""
+        edit_id = self._send_edit("only edit")
+
+        self.reactor.advance(7200)
+
+        purged = self.get_success(self.purge_handler.run_purge())
+        self.assertEqual(purged, 0)
+
+        self.assertIsNotNone(
+            self.get_success(self.store.get_event(edit_id, allow_none=True))
+        )
+
+    def test_purge_multiple_targets(self) -> None:
+        """Purge works correctly with multiple edited messages."""
+        # Create a second message
+        res = self.helper.send(self.room, body="Second!", tok=self.user_token)
+        second_parent_id = res["event_id"]
+
+        # Send 3 edits for parent 1
+        self._send_edit("p1 edit 1")
+        self._send_edit("p1 edit 2")
+        p1_edit3_id = self._send_edit("p1 edit 3")
+
+        # Send 2 edits for parent 2
+        self._send_edit("p2 edit 1", parent_id=second_parent_id)
+        p2_edit2_id = self._send_edit("p2 edit 2", parent_id=second_parent_id)
+
+        self.reactor.advance(7200)
+
+        purged = self.get_success(self.purge_handler.run_purge())
+        self.assertEqual(purged, 3)  # 2 from parent1, 1 from parent2
+
+        # Latest edits for each target survive
+        self.assertIsNotNone(
+            self.get_success(self.store.get_event(p1_edit3_id, allow_none=True))
+        )
+        self.assertIsNotNone(
+            self.get_success(self.store.get_event(p2_edit2_id, allow_none=True))
+        )
+
+    def test_purge_honors_batch_size_across_runs(self) -> None:
+        """Purge removes superseded edits in deterministic stream-order batches."""
+        edit1_id = self._send_edit("edit 1")
+        edit2_id = self._send_edit("edit 2")
+        edit3_id = self._send_edit("edit 3")
+        edit4_id = self._send_edit("edit 4")
+
+        self.reactor.advance(7200)
+
+        self.assertEqual(self.get_success(self.purge_handler.run_purge(batch_size=1)), 1)
+        self.assertEqual(self.get_success(self.purge_handler.run_purge(batch_size=1)), 1)
+        self.assertEqual(self.get_success(self.purge_handler.run_purge(batch_size=1)), 1)
+        self.assertEqual(self.get_success(self.purge_handler.run_purge(batch_size=1)), 0)
+
+        self.assertIsNone(
+            self.get_success(self.store.get_event(edit1_id, allow_none=True))
+        )
+        self.assertIsNone(
+            self.get_success(self.store.get_event(edit2_id, allow_none=True))
+        )
+        self.assertIsNone(
+            self.get_success(self.store.get_event(edit3_id, allow_none=True))
+        )
+        self.assertIsNotNone(
+            self.get_success(self.store.get_event(edit4_id, allow_none=True))
+        )
+
+    def test_purge_skips_receipt_anchored_edits(self) -> None:
+        """Superseded edits that receipts point to should not be purged."""
+        edit1_id = self._send_edit("edit 1")
+        edit2_id = self._send_edit("edit 2")
+
+        self.get_success(
+            self.store.insert_receipt(
+                room_id=self.room,
+                receipt_type=ReceiptTypes.READ,
+                user_id=self.user_id,
+                event_ids=[edit1_id],
+                thread_id=None,
+                data={},
+            )
+        )
+
+        self.reactor.advance(7200)
+
+        purged = self.get_success(self.purge_handler.run_purge())
+        self.assertEqual(purged, 0)
+
+        self.assertIsNotNone(
+            self.get_success(self.store.get_event(edit1_id, allow_none=True))
+        )
+        self.assertIsNotNone(
+            self.get_success(self.store.get_event(edit2_id, allow_none=True))
+        )
+
+    def test_admin_api_purge_edits(self) -> None:
+        """The admin API endpoint triggers a purge."""
+        self._send_edit("edit 1")
+        self._send_edit("edit 2")
+        edit3_id = self._send_edit("edit 3")
+
+        self.reactor.advance(7200)
+
+        channel = self.make_request(
+            "POST",
+            "/_synapse/admin/v1/purge_edits",
+            content={},
+            access_token=self.admin_token,
+        )
+        self.assertEqual(200, channel.code, channel.json_body)
+        self.assertEqual(channel.json_body["purged"], 2)
+
+        # Latest edit survives
+        self.assertIsNotNone(
+            self.get_success(self.store.get_event(edit3_id, allow_none=True))
+        )
+
+    def test_admin_api_requires_admin(self) -> None:
+        """Non-admin users cannot use the purge_edits endpoint."""
+        channel = self.make_request(
+            "POST",
+            "/_synapse/admin/v1/purge_edits",
+            content={},
+            access_token=self.user_token,
+        )
+        self.assertEqual(403, channel.code, channel.json_body)
+
+    def test_admin_api_with_overrides(self) -> None:
+        """The admin API accepts override parameters."""
+        self._send_edit("edit 1")
+        self._send_edit("edit 2")
+
+        self.reactor.advance(7200)
+
+        channel = self.make_request(
+            "POST",
+            "/_synapse/admin/v1/purge_edits",
+            content={"dry_run": True, "batch_size": 500},
+            access_token=self.admin_token,
+        )
+        self.assertEqual(200, channel.code, channel.json_body)
+        self.assertEqual(channel.json_body["purged"], 1)
+
+    def test_admin_api_validates_input(self) -> None:
+        """The admin API rejects invalid parameter types and values."""
+        # Negative min_age_seconds
+        channel = self.make_request(
+            "POST",
+            "/_synapse/admin/v1/purge_edits",
+            content={"min_age_seconds": -1},
+            access_token=self.admin_token,
+        )
+        self.assertEqual(400, channel.code, channel.json_body)
+
+        # Boolean min_age_seconds
+        channel = self.make_request(
+            "POST",
+            "/_synapse/admin/v1/purge_edits",
+            content={"min_age_seconds": True},
+            access_token=self.admin_token,
+        )
+        self.assertEqual(400, channel.code, channel.json_body)
+
+        # String min_age_seconds
+        channel = self.make_request(
+            "POST",
+            "/_synapse/admin/v1/purge_edits",
+            content={"min_age_seconds": "not_a_number"},
+            access_token=self.admin_token,
+        )
+        self.assertEqual(400, channel.code, channel.json_body)
+
+        # Zero batch_size
+        channel = self.make_request(
+            "POST",
+            "/_synapse/admin/v1/purge_edits",
+            content={"batch_size": 0},
+            access_token=self.admin_token,
+        )
+        self.assertEqual(400, channel.code, channel.json_body)
+
+        # Boolean batch_size
+        channel = self.make_request(
+            "POST",
+            "/_synapse/admin/v1/purge_edits",
+            content={"batch_size": True},
+            access_token=self.admin_token,
+        )
+        self.assertEqual(400, channel.code, channel.json_body)
+
+        # String dry_run
+        channel = self.make_request(
+            "POST",
+            "/_synapse/admin/v1/purge_edits",
+            content={"dry_run": "yes"},
+            access_token=self.admin_token,
+        )
+        self.assertEqual(400, channel.code, channel.json_body)
+
+    def test_purge_only_removes_same_sender_edits(self) -> None:
+        """Edits from a different sender should not be considered as
+        superseding same-sender edits (matching get_applicable_edits logic)."""
+        # Same sender sends two edits
+        self._send_edit("alice edit 1")
+        alice_edit2_id = self._send_edit("alice edit 2")
+
+        # Different sender sends an edit for the same target
+        bob_edit_content = {
+            "msgtype": "m.text",
+            "body": "* bob edit",
+            "m.new_content": {"msgtype": "m.text", "body": "bob edit"},
+        }
+        bob_channel = self._send_relation(
+            RelationTypes.REPLACE,
+            EventTypes.Message,
+            content=bob_edit_content,
+            access_token=self.user2_token,
+        )
+        bob_edit_id = bob_channel.json_body["event_id"]
+
+        self.reactor.advance(7200)
+
+        purged = self.get_success(self.purge_handler.run_purge())
+        # Only 1 superseded edit: alice's first edit (alice's 2nd is latest
+        # applicable for same-sender). Bob's edit is from a different sender,
+        # so it doesn't participate in the same-sender ranking at all — the SQL
+        # joins on sender+type matching the original.
+        self.assertEqual(purged, 1)
+
+        # alice edit 2 and bob edit survive
+        self.assertIsNotNone(
+            self.get_success(self.store.get_event(alice_edit2_id, allow_none=True))
+        )
+        self.assertIsNotNone(
+            self.get_success(self.store.get_event(bob_edit_id, allow_none=True))
+        )
+
+
+class PurgeEditsDisabledTestCase(BaseRelationsTestCase):
+    """Tests behavior of purge_edits admin API when feature is disabled."""
+
+    servlets = [
+        relations.register_servlets,
+        room.register_servlets,
+        sync.register_servlets,
+        login.register_servlets,
+        register.register_servlets,
+        admin.register_servlets_for_client_rest_resource,
+        admin.register_servlets,
+    ]
+
+    def default_config(self) -> dict[str, Any]:
+        config = super().default_config()
+        experimental = config.setdefault("experimental_features", {})
+        experimental["mindroom_compact_edits_enabled"] = True
+        experimental["mindroom_edit_purge"] = {
+            "enabled": False,
+            "interval_seconds": 999999,
+        }
+        return config
+
+    def prepare(self, reactor: MemoryReactor, clock: Clock, hs: HomeServer) -> None:
+        super().prepare(reactor, clock, hs)
+        self.admin_user_id = self.register_user("admin", "adminpass", admin=True)
+        self.admin_token = self.login("admin", "adminpass")
+
+    def test_admin_api_rejects_when_feature_disabled(self) -> None:
+        channel = self.make_request(
+            "POST",
+            "/_synapse/admin/v1/purge_edits",
+            content={},
+            access_token=self.admin_token,
+        )
+        self.assertEqual(400, channel.code, channel.json_body)

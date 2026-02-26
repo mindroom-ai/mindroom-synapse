@@ -68,6 +68,7 @@ from synapse.rest.admin.federation import (
     ListDestinationsRestServlet,
 )
 from synapse.rest.admin.media import ListMediaInRoom, register_servlets_for_media_repo
+from synapse.rest.admin.purge_edits import PurgeEditsRestServlet
 from synapse.rest.admin.registration_tokens import (
     ListRegistrationTokensRestServlet,
     NewRegistrationTokenRestServlet,
@@ -350,6 +351,7 @@ def register_servlets(hs: "HomeServer", http_server: HttpServer) -> None:
     ScheduledTasksRestServlet(hs).register(http_server)
     AdminRoomHierarchy(hs).register(http_server)
     EventRestServlet(hs).register(http_server)
+    PurgeEditsRestServlet(hs).register(http_server)
 
 
 def register_servlets_for_client_rest_resource(

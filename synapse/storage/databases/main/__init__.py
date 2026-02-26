@@ -67,6 +67,7 @@ from .monthly_active_users import MonthlyActiveUsersWorkerStore
 from .openid import OpenIdStore
 from .presence import PresenceStore
 from .profile import ProfileStore
+from .purge_edits import PurgeEditsStore
 from .purge_events import PurgeEventsStore
 from .push_rule import PushRulesWorkerStore
 from .pusher import PusherStore
@@ -129,6 +130,7 @@ class DataStore(
     StateStore,
     SignatureStore,
     ApplicationServiceStore,
+    PurgeEditsStore,
     PurgeEventsStore,
     EventFederationStore,
     MediaRepositoryStore,
