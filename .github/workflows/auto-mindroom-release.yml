@@ -1,0 +1,54 @@
+name: Create MindRoom Release
+
+on:
+  push:
+    branches:
+      - develop
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-mindroom-release-develop
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Create release tag and GitHub release
+    if: ${{ github.repository_owner == 'mindroom-ai' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Refresh remote tags
+        run: git fetch --force --tags origin
+
+      - name: Compute MindRoom release tag
+        id: version
+        env:
+          RELEASE_TAG_PREFIX: v
+          RELEASE_TAG_SUFFIX: mindroom
+        run: python3 scripts-dev/fork_release_tag.py
+
+      - name: Create release (or skip if it already exists)
+        env:
+          GH_TOKEN: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+          BASE_VERSION: ${{ steps.version.outputs.base_version }}
+          RELEASE_ITERATION: ${{ steps.version.outputs.release_iteration }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; skipping."
+            exit 0
+          fi
+
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$RELEASE_TAG" \
+            --generate-notes \
+            --notes "Automated release based on Synapse ${BASE_VERSION} (MindRoom iteration ${RELEASE_ITERATION})."

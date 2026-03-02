@@ -98,6 +98,22 @@ Developers might be particularly interested in:
 Alongside all that, join our developer community on Matrix:
 `#synapse-dev:matrix.org <https://matrix.to/#/#synapse-dev:matrix.org>`_, featuring real humans!
 
+MindRoom fork releases
+======================
+
+- Every push to ``develop`` creates an automated GitHub release tag in the format
+  ``v<base_version>-mindroom.<n>``.
+- ``base_version`` is read from ``pyproject.toml`` by default (or ``BASE_VERSION``
+  if set), with upstream-style release tags as fallback; ``<n>`` increments from
+  existing fork tags for that base version.
+- The helper is reusable across forks via env vars:
+  ``RELEASE_TAG_PREFIX``, ``RELEASE_TAG_SUFFIX``, ``BASE_TAG_PREFIX``, ``BASE_VERSION``.
+- Local preview of the next tag:
+
+.. code-block:: bash
+
+    python3 scripts-dev/fork_release_tag.py
+
 Copyright and Licensing
 =======================
 
