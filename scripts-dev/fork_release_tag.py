@@ -9,10 +9,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-
-BASE_VERSION_RE = re.compile(
-    r"^\s*(\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?)(?:[-+].*)?\s*$"
-)
+BASE_VERSION_RE = re.compile(r"^\s*(\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?)(?:[-+].*)?\s*$")
 SORTABLE_BASE_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:(a|b|rc)(\d+))?$")
 PYPROJECT_VERSION_RE = re.compile(r'^\s*version\s*=\s*"([^"]+)"\s*$', re.MULTILINE)
 
@@ -71,9 +68,7 @@ def build_prefix_pattern(prefix: str) -> str:
 
 def get_base_version_from_tags(all_tags: list[str], base_prefix: str) -> str | None:
     prefix_pattern = build_prefix_pattern(base_prefix)
-    base_re = re.compile(
-        rf"^{prefix_pattern}(\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?)$"
-    )
+    base_re = re.compile(rf"^{prefix_pattern}(\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?)$")
     versions = [match.group(1) for tag in all_tags if (match := base_re.fullmatch(tag))]
     if not versions:
         return None
@@ -146,7 +141,9 @@ def write_github_output(result: ReleaseTag) -> None:
         output_file.write(f"base_version={result.base_version}\n")
         output_file.write(f"release_iteration={result.release_iteration}\n")
         output_file.write(f"release_tag={result.release_tag}\n")
-        output_file.write(f"reused_tag_at_head={str(result.reused_tag_at_head).lower()}\n")
+        output_file.write(
+            f"reused_tag_at_head={str(result.reused_tag_at_head).lower()}\n"
+        )
 
 
 def read_pyproject_version() -> str | None:
@@ -182,11 +179,12 @@ def main() -> int:
         if pyproject_version:
             base_version = parse_base_version(pyproject_version)
         else:
-            base_version = get_base_version_from_tags(all_tags, base_prefix)
-            if not base_version:
+            auto_base_version = get_base_version_from_tags(all_tags, base_prefix)
+            if not auto_base_version:
                 raise ValueError(
                     "Could not auto-detect base version. Set BASE_VERSION or provide pyproject.toml version."
                 )
+            base_version = auto_base_version
 
     result = compute_release_tag(
         base_version,
