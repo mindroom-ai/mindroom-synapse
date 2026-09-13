@@ -1,4 +1,10 @@
 # MindRoom Synapse
+
+<picture>
+  <source media="(prefers-reduced-motion: no-preference)" srcset="https://raw.githubusercontent.com/mindroom-ai/mindroom/main/assets/logo/logo-mark-animated.svg" />
+  <img src="https://raw.githubusercontent.com/mindroom-ai/mindroom/main/assets/logo/logo-mark.svg" alt="MindRoom Logo" align="right" width="120" />
+</picture>
+
 > This is the MindRoom fork of Element Synapse. It exists to support MindRoom Matrix workloads, including high-frequency edit streaming, while keeping compatibility with the Matrix ecosystem.
 
 This repository tracks upstream Synapse and carries a small set of fork-specific changes.
